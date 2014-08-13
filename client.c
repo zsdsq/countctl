@@ -1,9 +1,8 @@
 #include "head.h"
 
-void count(const char* blob, int sz, int* count_a){
+void count(const unsigned char* blob, int sz, int* count_a){
 		int i;
 		for (i=0; i<sz; i++){
-			printf("count %c\n", blob[i]);
 			(count_a[blob[i]])++;
 		}
 }
@@ -120,8 +119,6 @@ int main(){
 				break;
 
 		} else if (msg_h.code==MSG_BLOB){    
-			//printf("%s\n", buff);
-			//sleep(2);
 			count(buff, msg_h.size, count_a);
 
 			m_msg.code = MSG_BLOB;
@@ -129,7 +126,7 @@ int main(){
 
 			res = write(sockfd, &m_msg, HEADSZ);
 			printf("cli h blob = %d\n", m_msg.size);
-			//sleep(3);
+
 			res = write(sockfd, count_a, m_msg.size);
 			printf("cli blob = %d\n", res);
 

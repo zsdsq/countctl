@@ -1,5 +1,5 @@
 run: server client countctl
-	./countctl /media/dim-ka/Archive1/altlibrary-linuxintro2.pdf 1
+	./countctl /home/dim-ka/main/step1/task.txt 1
 #	./countctl ./1.c 10
 
 countctl: countctl.c head.h
