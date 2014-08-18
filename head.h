@@ -6,10 +6,12 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/select.h>
+#include <fcntl.h>
+#include <signal.h>
 
 struct msg_head{
 	int code;
-	int size;   // in case simple command store size of struct, else size of blob
+	int blob_size;   // in case simple command store size of struct, else size of blob
 };
 
 #define SERV_PATH "/tmp/superserv"

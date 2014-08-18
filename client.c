@@ -62,7 +62,7 @@ int main(){
 	printf("  --- Connectd %d --- \n", getpid());
 
 	max_d = sockfd;
-	t.tv_sec = 1;
+	t.tv_sec = 1000;
 	t.tv_usec = 0;
 
 	
@@ -89,7 +89,7 @@ int main(){
 
 		FD_ZERO(&readfds);			
 		FD_SET(sockfd, &readfds);
-		t.tv_sec = 1;
+		t.tv_sec = 1000;
 		
 		// set size of block, which we will be wait avaible
 		
@@ -139,10 +139,11 @@ int main(){
 			msg_h.size = HEADSZ;
 		}
 	}
+	sleep(10);
 
 	close(sockfd);
 
-	printf("end %d\n", getpid());
+	printf("end %d\ncli grp %d\n", getpid(), getpgrp());
 	
 	return 0;
 }

@@ -1,226 +1,410 @@
 #include "head.h"
 
-// client connection status
-#define STAT_DEAD -1
-#define STAT_COMM 0
-#define STAT_MSG CHAR_CT
+#define LOG_FILE_NAME "log.txt"
 
-int set_trans_block_sz(int sockfd, int size){
-	int res;
-	res = setsockopt(sockfd, SOL_SOCKET, SO_RCVLOWAT, (const char *) &size, sizeof(int));
-	if (res!=0) {
-		printf("cli setsockopt err");
-		return 1;
-	}
+#define MAX_BLOBSZ BUFFSZ-HEADSZ
 
-	return 0;
+struct client{
+	int sfd;
+	struct msg_head last_hdr;
+};
+
+struct srv_connection{
+	int srv_sfd;
+	
+	int cli_ct;
+	int active_ct;
+	struct client *cli;
+};
+
+struct select{
+	fd_set readfds;
+	int max_d;
+	struct timeval t;
 }
+
+//
+// main
+//
+
+int init_connection(struct srv_connection *conn, int cli_ct);
+int make_daemon(char* logfile);
+int create_workers(int n);
+int process_file(FILE* file, struct srv_connection *conn);
 
 int main(int argc, char *argv[]){
 
-	// sockets
-  int sockfd; 	 // this socked
-
-  int *cli_sfd;  // clents socket fds
-	struct msg_head *cli_msg_h; // status of client socket connection 
-	int cli_ct;
-	int active_cli_count;
-	
-	struct sockaddr_un srv, cli;
-	int len;
-
-	// for select
-  fd_set readfds;
-	int max_d;				// max id of fd in set
-	struct timeval t; // timer
-
-	struct msg_head* msg_h;
-	struct msg_head m_msg;
-	
-	int i, j; // counters
-	
-	char buff[BUFFSZ];	
-	int msg;	
-
-	int res, rc;
-
-	int count_c[CHAR_CT];
-	int *count_c_t;
+	struct srv_connection conn;
 
 	FILE *fin;
-	int fend;
-
-	int itr;
 
 	if (argc!=3) {
-		printf("bad param\n");
+		printf("Bad param\n");
 		return 1;
 	}
+
+	cli_ct = atoi(argv[2]);
 
 	fin = fopen(argv[1], "r");
 	if (fin == NULL) {
 		printf("err file");
 		return 1;
 	}
-	fend = 0;
 
-  cli_ct = atoi(argv[2]);
+	make_daemon(argv[1]);
 
-	cli_sfd = (int*) malloc(cli_ct*sizeof(int));
-	cli_msg_h = (int*) malloc(cli_ct*sizeof(struct msg_head));
+	create_workers(cli_ct);
+	
+	init_connection(&conn);
 
-	if ((sockfd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
-    printf("s_open_err");
-    return 1;
-  }
+	process_file(fin, &conn);
 
-  srv.sun_family = AF_UNIX;
-  strcpy(srv.sun_path, SERV_PATH);
-  unlink(srv.sun_path);
-  len = sizeof(srv.sun_family) + strlen(srv.sun_path);
+	close(conn.srv_sfd);
 
-  if (bind(sockfd, (struct sockaddr *)&srv, len) == -1) {
-    printf("bind err");
-    return 0;
-  }
+	return 0;
+}
+
+//
+// init connection
+//
+
+int get_srv_socket();
+int connect_clients(struct srv_connection *conn);
+
+int init_connection(struct srv_connection *conn, int cli_ct){
+
+	conn->cli_ct = cli_ct;
+
+	conn->cli = (struct client*) malloc(conn->cli_ct*sizeof(struct client));
+
+	conn->srv_sfd = get_srv_socket();
   
-  if (listen(sockfd, 5) == -1) {
-    printf("listen err");
-    return 0;
-  }
+	connect_clients(conn);
 
-	len = sizeof(cli);
+	conn->active_ct = conn->cli_ct;
 
-  for(i=0; i<cli_ct; i++){
-    printf("\ntry con\n");    
-		
-    if ((cli_sfd[i] = accept(sockfd, (struct sockaddr *)&cli, &len)) == -1) {
+	for(i=0; i<conn->cli_ct; i++) {
+		conn->cli[i].last_hdr.code=MSG_NULL;
+	} 
+}
+
+// get server socket
+
+int get_srv_socket(){
+	int len;
+	struct sockaddr_un addr;
+
+
+	if ((sfd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+	  printf("s_open_err");
+	  return 0;
+	}
+
+	addr.sun_family = AF_UNIX;
+	strcpy(addr.sun_path, SERV_PATH);
+	unlink(addr.sun_path);
+	len = sizeof(addr.sun_family) + strlen(srv.sun_path);
+
+	if (bind(sfd, (struct sockaddr *)&addr, len) == -1) {
+	  printf("bind err");
+	  return 0;
+	}
+
+	if (listen(sfd, 5) == -1) {
+	  printf("listen err");
+	  return 0;
+	}
+
+	return sfd;
+}
+
+// connect clients
+
+int connect_clients(struct srv_connection *conn){
+	int len;
+	struct sockaddr_un addr;
+
+	len = sizeof(addr);
+
+  for(i=0; i<conn->cli_ct; i++){
+
+    if ((conn->cli[i].sfd = accept(conn->srv_sfd, (struct sockaddr *)&addr, &len)) == -1) {
       printf("accept err");
       return 0;
     }
 
-    printf("con\n");
+    printf("Connected: %d\n", i);
   }
 
 	printf("\nall connected\n");
 
-	active_cli_count = cli_ct;
-	max_d = 0;
-	t.tv_sec = 5;
-	t.tv_usec = 0;
+	return 0;
+}
 
-	for(i=0; i<cli_ct; i++) {
-		cli_msg_h[i].code=MSG_NULL;
-		cli_msg_h[i].size=HEADSZ;
+// 
+// make daemon
+// 
+
+int make_daemon(char* logfile){
+	int logfd;
+
+	if ((logfd = open(LOG_FILE_NAME, O_CREAT|O_WRONLY)) != -1) {
+		close(0);
+		close(1);
+		close(2);
+		open("/dev/null", O_RDONLY); // block in		
+
+		dup2(logfd, 1);
+		dup2(logfd, 2);
+		close(logfd);
+
+		pid = setsid();   // change session
+
+		//chdir("/");
+	} else {
+		printf("Error, cannot open log, process not will start\n");
 	}
 
-	itr = -1;
+	return 0;
+}
+
+//
+// create workers
+//
+
+int create_workers(int n){
+	int i;
+
+	for (i=0; i<n; i++){
+		if (fork() == 0) {
+			execlp("./client", "./client", (char *)NULL);
+			// will be executed only if error
+			printf("CLIENT BIG ERROR\n");
+		}
+	}		
+}
+
+//
+// process file
+//
+
+int prepare_select(struct srv_connection *conn, struct select_struct* sel);
+int process_select(struct srv_connection *conn, struct select s_val, FILE* file, int* count);
+int process_msg(struct msg_head* prev_msg, struct msg_head* prev_msg);
+int print_result(int arr*, int ct);
+
+int process_file(FILE* file, struct srv_connection *conn){
+	struct select s_val;
+	int count[CHAR_CT];
+	int res;
+
 	while(1){
-		printf("s server %d %d\n", itr, active_cli_count);
-		itr++;
-
-		//if (itr>10) {printf("serv too much itr\n"); break;}
-
-		if (active_cli_count==0) break;
-
-		FD_ZERO(&readfds);
-
-		max_d = 0;
-		for(i=0; i<cli_ct; i++) {
-			if (cli_msg_h[i].code!=TERM) {
-				FD_SET(cli_sfd[i], &readfds);
-
-				set_trans_block_sz(cli_sfd[i], cli_msg_h[i].size);
-				if (cli_sfd[i]>max_d) max_d = cli_sfd[i];
-			}
+		if (!prepare_select(conn, &s_val)){
+			printf("File has processed, All clients ended");
+			break;
 		}
 
-		t.tv_sec = 5;
-
-		res = select(max_d+1, &readfds, NULL, NULL, &t);
+		res = select(s_val.max_d+1, &(s_val.readfds), NULL, NULL, &(s_val.t));
 
 		if (res<0) {
 			printf("err select\n");
 			continue;
-		}
-		if (res==0){
+		} else if (res==0){
 			printf("\ns timeout s\n");
 			continue;
 		}
-		// can read
 
-		for (i=0; i<cli_ct; i++){
-			
-			if (!FD_ISSET(cli_sfd[i], &readfds)){
-
-				//printf("s not exist\n");
-				continue;
-			}
-
-			res = read(cli_sfd[i], buff, cli_msg_h[i].size);
-
-			printf("s rec --- %d %d %d\n", res, cli_msg_h[i].size, cli_msg_h[i].code);
-
-			if (cli_msg_h[i].code!=MSG_BLOB){
-				cli_msg_h[i] = *((struct msg_head*)buff);
-				printf("s rec not blob\n");
-				// now work with new rec mess
-				if (cli_msg_h[i].code==MSG_BLOB)
-					continue;
-				
-				if (!fend && feof(fin)){
-					printf("s file end\n");
-					fend = 1;	
-					fclose(fin);		
-				}	
-
-				if (fend){ 
-					printf("s close %d\n", itr);
-					m_msg.code = TERM;
-					write(cli_sfd[i], &m_msg, HEADSZ);
-					cli_msg_h[i].code=TERM;
-					close(cli_sfd[i]);
-					active_cli_count--;
-					continue;
-				}
-
-				rc = fread(buff, sizeof(char), BUFFSZ-HEADSZ, fin);
-
-				m_msg.code = MSG_BLOB;
-				m_msg.size = rc;
-
-				res = write(cli_sfd[i], &m_msg, HEADSZ);
-				printf("s send msg\n");
-				res = write(cli_sfd[i], buff, rc);
-				printf("s send blob %d\n", res);
-
-			} else if (cli_msg_h[i].code==MSG_BLOB) {
-
-				//printf("s rec blob %d %d\n", cli_msg_h[i].size, cli_msg_h[i].code);
-				//rc = recv(cli_sfd[i], buff, cli_msg_h[i].size, MSG_DONTWAIT);
-
-				
-				count_c_t = (int *)buff;
-
-				for(j=0; j<CHAR_CT; j++){
-					//printf("arr %d\n", count_c_t[j]);
-					count_c[j] += count_c_t[j];
-				}
-				
-				cli_msg_h[i].code=MSG_NULL;
-				cli_msg_h[i].size=HEADSZ;
-			}
-		}
-	}	
-
-  printf("\ns -------- good end -----\n");
-
-
-	for(i=0; i<CHAR_CT; i++) {
-		printf("\n %c : %d", i, count_c[i]);
+		process_select(conn, s_val, file, count);
 	}
-
-  close(sockfd);
 
 	return 0;
 }
+
+// prepare select
+
+int set_trans_block_sz(int sfd, int size);
+
+int prepare_select(struct srv_connection *conn, struct select_struct* sel){
+
+	FD_ZERO(&(sel->readfds));
+
+	sel->max_d = 0;
+
+	for(i=0; i<conn->cli_ct; i++) {
+		if (conn->cli[i].last_hdr.code!=TERM) {
+			FD_SET(conn->cli[i].sfd, &(sel->readfds));
+
+			set_trans_block_sz(conn->cli[i].sfd, conn->cli[i].last_hdr.size);
+
+			if (conn->cli[i].sfd > sel->max_d) 
+				sel->max_d = conn->cli[i].sfd;
+		}
+	}
+
+	sel->t.tv_sec = 5;	
+	return max_d;
+}
+
+int set_trans_block_sz(int sfd, int size){
+	int res;
+	res = setsockopt(sfd, SOL_SOCKET, SO_RCVLOWAT, (const char *) &size, sizeof(int));
+	if (res!=0) {
+		printf("Error: set_trans_block_sz\n");
+		return 1;
+	}
+
+	return 0;
+}
+
+// process select
+
+int process_select(struct srv_connection *conn, struct select s_val, FILE* file, int* count){
+	int i;
+	for (i=0; i<conn->cli_ct; i++){
+			
+		if (!FD_ISSET(conn->cli[i].sfd, &(s_val.readfds)))
+			continue;
+		
+		process_msg(conn->cli[i], file, count);
+	}
+}
+
+// process message
+
+int process_msg(struct msg_head* prev_msg, struct msg_head* prev_msg){
+	
+	
+
+}
+
+// print result
+
+int print_result(int arr*, int ct){
+	int i=0;
+	for(i=0; i<ct; i++) {
+		printf("%c : %d\n", i, count_c[i]);
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////////
+
+
+
+
+int get_blob(char *buff, FILE* file){
+	if (feof(file)) return 0;
+
+	return fread(buff, sizeof(char), MAX_BLOBSZ, fin);
+}
+
+int send_blob(struct client* cli, char* buff, int sz){
+		struct msg_head m_msg; 	
+		
+		m_msg.code = MSG_BLOB;
+		m_msg.blob_size = sz;
+
+		res = write(cli->sfd, &m_msg, HEADSZ);
+
+		printf("s send msg\n");
+
+		res = write(cli->sfd, buff, m_msg.blob_size);
+
+		printf("s send blob %d\n", res);
+}
+
+		if (fend){ 
+			printf("s close %d\n", itr);
+			m_msg.code = TERM;
+			write(cli_sfd[i], &m_msg, HEADSZ);
+			cli_msg_h[i].code=TERM;
+			close(cli_sfd[i]);
+			active_cli_count--;
+			continue;
+		}
+
+int store_count(int *count_to, int *count_from){
+
+	int j;
+	for(j=0; j<CHAR_CT; j++){
+		count_to[j] += count_from[j];
+	}
+}
+
+int read_and_answer(struct client* cli, FILE **file, int* count){
+		char buff[BUFFSZ];
+		int sz, res, len, ret_val;
+		struct msg_head m_msg;
+		
+		if (cli->last_hdr.code==MSG_BLOB)
+			sz = cli->last_hdr.blob_size;
+		else sz = HEADSZ;
+
+		res = read(cli[i].sfd, buff, sz);
+
+		switch(cli->last_hdr.code){
+		case MSG_BLOB:
+			store_count(count, (int*) buff);
+			cli->last_hdr.code=MSG_NULL;
+			break;
+		default:
+			cli->last_hdr=*((struct msg_head*)buff);
+			if (cli.last_hdr.code==MSG_BLOB)
+				break;
+
+			if (file==NULL){
+				printf("Serve close client\n");
+				m_msg.code = TERM;
+				write(cli.sfd, &m_msg, HEADSZ);
+				cli_msg_h[i].code=TERM;
+				close(cli_sfd[i]);
+				active_cli_count--;
+				continue;
+
+				break;
+			}
+
+			if ((len=get_blob(buff, *file))==0){
+				printf("End of file");
+				
+				fclose(*file);
+				*file = NULL;
+			}
+-
+-				if (fend){ 
+-					printf("s close %d\n", itr);
+-					m_msg.code = TERM;
+-					write(cli_sfd[i], &m_msg, HEADSZ);
+-					cli_msg_h[i].code=TERM;
+-					close(cli_sfd[i]);
+-					active_cli_count--;
+-					continue;
+-				}
+-
+-				rc = fread(buff, sizeof(char), BUFFSZ-HEADSZ, fin);
+-
+-				m_msg.code = MSG_BLOB;
+-				m_msg.size = rc;
+-
+-				res = write(cli_sfd[i], &m_msg, HEADSZ);
+-				printf("s send msg\n");
+-				res = write(cli_sfd[i], buff, rc);
+-				printf("s send blob %d\n", res);
+		}
+		
+
+		if (cli_msg_h[i].code!=MSG_BLOB){
+			cli_msg_h[i] = *((struct msg_head*)buff);
+			printf("s rec not blob\n");
+			// now work with new rec mess
+			if (cli_msg_h[i].code==MSG_BLOB)
+				continue;
+			
+		send_fileblock;
+
+		} else if (cli_msg_h[i].code==MSG_BLOB) {
+		
+
+		}
+}
+
+

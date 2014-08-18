@@ -2,7 +2,7 @@
 
 #define LOCK_FILE "lock"
 
-int printHelpAndExit();
+int printHelp();
 int stop();
 int start(int argc, char *argv[]);
 
@@ -12,13 +12,13 @@ int main(int argc, char *argv[]){
   }else if (argc==3){
 		start(argc, argv);
   } else {
-		printHelpAndExit();
+		printHelp();
 	}
 	
 	return 0;
 }
 
-int printHelpAndExit(){
+int printHelp(){
 	printf("Bad param.\nUsage:\n");
 	printf("1: countctl filename nworkers\n");
 	printf("2: countctl -stop\n");
@@ -56,7 +56,7 @@ int stop(){
 
 int start_server(int argc, char *argv[]){
 		execlp("./server", "./server", argv[1], argv[2], NULL);
-		// will be eceuted only if error
+		// will be executed only if error
 		printf("SERVER BIG ERROR\n");
 }
 
