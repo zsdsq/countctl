@@ -31,6 +31,7 @@ int init_connection(struct srv_connection *conn, int cli_ct);
 int make_daemon(char* logfile);
 int create_workers(int n);
 int process_file(FILE* file, struct srv_connection *conn);
+int close_connection(struct srv_connection *conn);
 
 int main(int argc, char *argv[]){
 
@@ -59,7 +60,9 @@ int main(int argc, char *argv[]){
 
 	process_file(fin, &conn);
 
-	close(conn.srv_sfd);
+	fclose(fin);
+
+	close_connection(&conn);
 
 	return 0;
 }
@@ -217,6 +220,8 @@ int process_file(FILE* file, struct srv_connection *conn){
 		process_select(conn, s_val, file, count);
 	}
 
+	print_result(count, CHAR_CT);	
+
 	return 0;
 }
 
@@ -270,57 +275,48 @@ int process_select(struct srv_connection *conn, struct select s_val, FILE* file,
 }
 
 // process message
+int read_msg(struct client* cli, char* buff);
+int store_count(int *count_to, int *count_from);
 
-int process_msg(struct msg_head* prev_msg, struct msg_head* prev_msg){
+int process_msg(struct client* cli, FILE* file, int* count){
+
+	char buff[BUFFSZ];
+	int rc;
+	struct msg_head m_msg;
 	
+	rc = read_msg(cli, buff);
+
+	switch(cli->last_hdr.code){
+	case MSG_BLOB:
+		store_count(count, (int*) buff);
+		cli->last_hdr.code=MSG_NULL;
+		break;
+	default:
+		cli->last_hdr=*((struct msg_head*)buff);
+
+		if (cli->last_hdr.code==MSG_BLOB)
+			break;
 	
+		if (feof(file)){
+			cli->last_hdr.code=TERM;
+			break;
+		}
 
-}
+		rc = fread(buff, sizeof(char), MAX_BLOBSZ, file);
 
-// print result
-
-int print_result(int arr*, int ct){
-	int i=0;
-	for(i=0; i<ct; i++) {
-		printf("%c : %d\n", i, count_c[i]);
+		rc = send_new_blob(cli, buff, rc);
 	}
 }
 
-/////////////////////////////////////////////////////////////////////////////
+int read_msg(struct client* cli, char* buff){
+	int msg_sz;
 
+	if (cli->last_hdr.code==MSG_BLOB)
+	msg_sz = cli->last_hdr.blob_size;
+	else msg_sz = HEADSZ;
 
-
-
-int get_blob(char *buff, FILE* file){
-	if (feof(file)) return 0;
-
-	return fread(buff, sizeof(char), MAX_BLOBSZ, fin);
+	return read(cli[i].sfd, buff, msg_sz);
 }
-
-int send_blob(struct client* cli, char* buff, int sz){
-		struct msg_head m_msg; 	
-		
-		m_msg.code = MSG_BLOB;
-		m_msg.blob_size = sz;
-
-		res = write(cli->sfd, &m_msg, HEADSZ);
-
-		printf("s send msg\n");
-
-		res = write(cli->sfd, buff, m_msg.blob_size);
-
-		printf("s send blob %d\n", res);
-}
-
-		if (fend){ 
-			printf("s close %d\n", itr);
-			m_msg.code = TERM;
-			write(cli_sfd[i], &m_msg, HEADSZ);
-			cli_msg_h[i].code=TERM;
-			close(cli_sfd[i]);
-			active_cli_count--;
-			continue;
-		}
 
 int store_count(int *count_to, int *count_from){
 
@@ -328,83 +324,54 @@ int store_count(int *count_to, int *count_from){
 	for(j=0; j<CHAR_CT; j++){
 		count_to[j] += count_from[j];
 	}
+
+	return 0;
 }
 
-int read_and_answer(struct client* cli, FILE **file, int* count){
-		char buff[BUFFSZ];
-		int sz, res, len, ret_val;
-		struct msg_head m_msg;
-		
-		if (cli->last_hdr.code==MSG_BLOB)
-			sz = cli->last_hdr.blob_size;
-		else sz = HEADSZ;
+int send_new_blob(struct client* cli, char* buff, int sz){
+	int rc;
+	struct msg_head m_msg; 
+	
+	m_msg.code = MSG_BLOB;
+	m_msg.size = sz;
 
-		res = read(cli[i].sfd, buff, sz);
+	rc = write(cli->sfd, &m_msg, HEADSZ);
+	printf("s send msg\n");
 
-		switch(cli->last_hdr.code){
-		case MSG_BLOB:
-			store_count(count, (int*) buff);
-			cli->last_hdr.code=MSG_NULL;
-			break;
-		default:
-			cli->last_hdr=*((struct msg_head*)buff);
-			if (cli.last_hdr.code==MSG_BLOB)
-				break;
+	rc = write(cli->sfd, buff, sz);
+	printf("s send blob %d\n", rc);
 
-			if (file==NULL){
-				printf("Serve close client\n");
-				m_msg.code = TERM;
-				write(cli.sfd, &m_msg, HEADSZ);
-				cli_msg_h[i].code=TERM;
-				close(cli_sfd[i]);
-				active_cli_count--;
-				continue;
-
-				break;
-			}
-
-			if ((len=get_blob(buff, *file))==0){
-				printf("End of file");
-				
-				fclose(*file);
-				*file = NULL;
-			}
--
--				if (fend){ 
--					printf("s close %d\n", itr);
--					m_msg.code = TERM;
--					write(cli_sfd[i], &m_msg, HEADSZ);
--					cli_msg_h[i].code=TERM;
--					close(cli_sfd[i]);
--					active_cli_count--;
--					continue;
--				}
--
--				rc = fread(buff, sizeof(char), BUFFSZ-HEADSZ, fin);
--
--				m_msg.code = MSG_BLOB;
--				m_msg.size = rc;
--
--				res = write(cli_sfd[i], &m_msg, HEADSZ);
--				printf("s send msg\n");
--				res = write(cli_sfd[i], buff, rc);
--				printf("s send blob %d\n", res);
-		}
-		
-
-		if (cli_msg_h[i].code!=MSG_BLOB){
-			cli_msg_h[i] = *((struct msg_head*)buff);
-			printf("s rec not blob\n");
-			// now work with new rec mess
-			if (cli_msg_h[i].code==MSG_BLOB)
-				continue;
-			
-		send_fileblock;
-
-		} else if (cli_msg_h[i].code==MSG_BLOB) {
-		
-
-		}
+	return rc;
 }
 
+// print result
+
+int print_result(int arr*, int ct){
+	int i;
+	for(i=0; i<ct; i++) {
+		printf("%c : %d\n", i, arr[i]);
+	}
+}
+
+//
+// close connection
+//
+
+int close_connection(struct srv_connection *conn){
+	int i;
+	for(i=0; i<conn->cli_ct; i++){
+		send_term(conn->cli[i].sfd);
+		close(conn->cli[i].sfd);
+	}
+	
+	close(conn->srv_sfd);
+}
+
+int term_cli(int sfd){
+	struct msg_head m_msg;
+
+	m_msg.code = TERM;
+
+	return write(sfd, &m_msg, HEADSZ);
+}
 
