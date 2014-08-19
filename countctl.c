@@ -42,7 +42,7 @@ int stop(){
 
 	printf("Try to kill\n");
 
-	if (kill(pid, SIGTERM)==-1) {
+	if (kill(-pid, SIGTERM)==-1) {
 		switch(errno){
 		case EPERM: printf("Not enought rights\n"); break;
 		case ESRCH: printf("No active process\n"); break;

@@ -21,7 +21,7 @@ struct select{
 	fd_set readfds;
 	int max_d;
 	struct timeval t;
-}
+};
 
 //
 // main
@@ -36,6 +36,7 @@ int close_connection(struct srv_connection *conn);
 int main(int argc, char *argv[]){
 
 	struct srv_connection conn;
+	int cli_ct;
 
 	FILE *fin;
 
@@ -56,7 +57,7 @@ int main(int argc, char *argv[]){
 
 	create_workers(cli_ct);
 	
-	init_connection(&conn);
+	init_connection(&conn, cli_ct);
 
 	process_file(fin, &conn);
 
@@ -76,6 +77,8 @@ int connect_clients(struct srv_connection *conn);
 
 int init_connection(struct srv_connection *conn, int cli_ct){
 
+	int i;
+
 	conn->cli_ct = cli_ct;
 
 	conn->cli = (struct client*) malloc(conn->cli_ct*sizeof(struct client));
@@ -94,7 +97,7 @@ int init_connection(struct srv_connection *conn, int cli_ct){
 // get server socket
 
 int get_srv_socket(){
-	int len;
+	int len, sfd;
 	struct sockaddr_un addr;
 
 
@@ -106,7 +109,7 @@ int get_srv_socket(){
 	addr.sun_family = AF_UNIX;
 	strcpy(addr.sun_path, SERV_PATH);
 	unlink(addr.sun_path);
-	len = sizeof(addr.sun_family) + strlen(srv.sun_path);
+	len = sizeof(addr.sun_family) + strlen(addr.sun_path);
 
 	if (bind(sfd, (struct sockaddr *)&addr, len) == -1) {
 	  printf("bind err");
@@ -124,20 +127,20 @@ int get_srv_socket(){
 // connect clients
 
 int connect_clients(struct srv_connection *conn){
-	int len;
+	int len, i;
 	struct sockaddr_un addr;
 
 	len = sizeof(addr);
 
-  for(i=0; i<conn->cli_ct; i++){
+	for(i=0; i<conn->cli_ct; i++){
 
-    if ((conn->cli[i].sfd = accept(conn->srv_sfd, (struct sockaddr *)&addr, &len)) == -1) {
-      printf("accept err");
-      return 0;
-    }
+		if ((conn->cli[i].sfd = accept(conn->srv_sfd, (struct sockaddr *)&addr, &len)) == -1) {
+		  printf("accept err");
+		  return 0;
+		}
 
-    printf("Connected: %d\n", i);
-  }
+		printf("Connected: %d\n", i);
+	}
 
 	printf("\nall connected\n");
 
@@ -151,7 +154,7 @@ int connect_clients(struct srv_connection *conn){
 int make_daemon(char* logfile){
 	int logfd;
 
-	if ((logfd = open(LOG_FILE_NAME, O_CREAT|O_WRONLY)) != -1) {
+	if ((logfd = open(LOG_FILE_NAME, O_CREAT|O_WRONLY|O_TRUNC)) != -1) {
 		close(0);
 		close(1);
 		close(2);
@@ -161,7 +164,7 @@ int make_daemon(char* logfile){
 		dup2(logfd, 2);
 		close(logfd);
 
-		pid = setsid();   // change session
+		setsid();   // change session
 
 		//chdir("/");
 	} else {
@@ -191,15 +194,18 @@ int create_workers(int n){
 // process file
 //
 
-int prepare_select(struct srv_connection *conn, struct select_struct* sel);
+int init_count(int *count);
+int prepare_select(struct srv_connection *conn, struct select* sel);
 int process_select(struct srv_connection *conn, struct select s_val, FILE* file, int* count);
-int process_msg(struct msg_head* prev_msg, struct msg_head* prev_msg);
-int print_result(int arr*, int ct);
+int process_msg(struct client* cli, FILE* file, int* count);
+int print_result(int *arr, int ct);
 
 int process_file(FILE* file, struct srv_connection *conn){
 	struct select s_val;
 	int count[CHAR_CT];
 	int res;
+
+	init_count(count);
 
 	while(1){
 		if (!prepare_select(conn, &s_val)){
@@ -225,11 +231,22 @@ int process_file(FILE* file, struct srv_connection *conn){
 	return 0;
 }
 
+// init count
+
+int init_count(int *count){
+	int i;
+
+	for (i=0; i<CHAR_CT; i++){
+		count[i]=0;
+	}	
+}
+
 // prepare select
 
 int set_trans_block_sz(int sfd, int size);
 
-int prepare_select(struct srv_connection *conn, struct select_struct* sel){
+int prepare_select(struct srv_connection *conn, struct select* sel){
+	int i;
 
 	FD_ZERO(&(sel->readfds));
 
@@ -239,15 +256,15 @@ int prepare_select(struct srv_connection *conn, struct select_struct* sel){
 		if (conn->cli[i].last_hdr.code!=TERM) {
 			FD_SET(conn->cli[i].sfd, &(sel->readfds));
 
-			set_trans_block_sz(conn->cli[i].sfd, conn->cli[i].last_hdr.size);
+			set_trans_block_sz(conn->cli[i].sfd, conn->cli[i].last_hdr.blob_size);
 
 			if (conn->cli[i].sfd > sel->max_d) 
 				sel->max_d = conn->cli[i].sfd;
 		}
 	}
 
-	sel->t.tv_sec = 5;	
-	return max_d;
+	sel->t.tv_sec = WAIT_TIME;	
+	return sel->max_d;
 }
 
 int set_trans_block_sz(int sfd, int size){
@@ -270,7 +287,7 @@ int process_select(struct srv_connection *conn, struct select s_val, FILE* file,
 		if (!FD_ISSET(conn->cli[i].sfd, &(s_val.readfds)))
 			continue;
 		
-		process_msg(conn->cli[i], file, count);
+		process_msg(&(conn->cli[i]), file, count);
 	}
 }
 
@@ -312,17 +329,17 @@ int read_msg(struct client* cli, char* buff){
 	int msg_sz;
 
 	if (cli->last_hdr.code==MSG_BLOB)
-	msg_sz = cli->last_hdr.blob_size;
+		msg_sz = cli->last_hdr.blob_size;
 	else msg_sz = HEADSZ;
 
-	return read(cli[i].sfd, buff, msg_sz);
+	return read(cli->sfd, buff, msg_sz);
 }
 
 int store_count(int *count_to, int *count_from){
 
-	int j;
-	for(j=0; j<CHAR_CT; j++){
-		count_to[j] += count_from[j];
+	int i;
+	for(i=0; i<CHAR_CT; i++){
+		count_to[i] += count_from[i];
 	}
 
 	return 0;
@@ -333,7 +350,7 @@ int send_new_blob(struct client* cli, char* buff, int sz){
 	struct msg_head m_msg; 
 	
 	m_msg.code = MSG_BLOB;
-	m_msg.size = sz;
+	m_msg.blob_size = sz;
 
 	rc = write(cli->sfd, &m_msg, HEADSZ);
 	printf("s send msg\n");
@@ -346,11 +363,13 @@ int send_new_blob(struct client* cli, char* buff, int sz){
 
 // print result
 
-int print_result(int arr*, int ct){
+int print_result(int *arr, int ct){
 	int i;
+	printf("\n-- RESULTS --\n");
 	for(i=0; i<ct; i++) {
-		printf("%c : %d\n", i, arr[i]);
+		printf("Char: %c | Num: %3d | Count: %10d\n", i, i, arr[i]);
 	}
+	printf("\n-- END RESULTS --\n");
 }
 
 //
@@ -367,11 +386,12 @@ int close_connection(struct srv_connection *conn){
 	close(conn->srv_sfd);
 }
 
-int term_cli(int sfd){
+int send_term(int sfd){
 	struct msg_head m_msg;
 
 	m_msg.code = TERM;
 
 	return write(sfd, &m_msg, HEADSZ);
 }
+
 
